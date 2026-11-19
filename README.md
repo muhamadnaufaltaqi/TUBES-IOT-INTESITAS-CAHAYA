@@ -33,6 +33,7 @@ const int ldrPin = 34;
 
 // ========================================
 // KONFIGURASI WIFI
+// Isi dengan kredensial WiFi kamu
 // ========================================
 const char* ssid = "Jendral Wito";
 const char* password = "jemputjamtigapagi";
@@ -40,27 +41,19 @@ const char* password = "jemputjamtigapagi";
 // ========================================
 // KONFIGURASI THINGSPEAK
 // ========================================
-unsigned long myChannelNumber = 3568782;
-
 const char* myWriteAPIKey = "KEPMDYIB1BLUPYQX";
 
 String serverName = "http://api.thingspeak.com/update";
 
 // ========================================
-// THRESHOLD SENSOR LDR
+// BATAS ADC SENSOR LDR
 // ========================================
-// ADC 0 - 1000    = Pencahayaan Tinggi
-// ADC 1001 - 3000 = Pencahayaan Sedang
-// ADC 3001 - 4095 = Pencahayaan Rendah
-
-int batasTerik = 1000;
-int batasMendung = 3000;
+const int batasTerik = 1000;
+const int batasMendung = 3000;
 
 // ========================================
 // INTERVAL PENGIRIMAN
 // ========================================
-// 30000 ms = 30 detik
-
 const unsigned long interval = 30000;
 unsigned long waktuSebelumnya = 0;
 
@@ -68,11 +61,9 @@ unsigned long waktuSebelumnya = 0;
 // MEMBACA RATA-RATA SENSOR LDR
 // ========================================
 int bacaSensorLDR() {
-
   long total = 0;
 
   for (int i = 0; i < 10; i++) {
-
     total += analogRead(ldrPin);
     delay(20);
   }
@@ -84,7 +75,6 @@ int bacaSensorLDR() {
 // KONEKSI WIFI
 // ========================================
 void koneksiWiFi() {
-
   if (WiFi.status() == WL_CONNECTED) {
     return;
   }
@@ -101,7 +91,6 @@ void koneksiWiFi() {
 
   while (WiFi.status() != WL_CONNECTED &&
          millis() - mulai < 15000) {
-
     delay(500);
     Serial.print(".");
   }
@@ -109,7 +98,6 @@ void koneksiWiFi() {
   lcd.clear();
 
   if (WiFi.status() == WL_CONNECTED) {
-
     Serial.println();
     Serial.println("WiFi Berhasil Terhubung!");
 
@@ -118,18 +106,13 @@ void koneksiWiFi() {
 
     lcd.setCursor(0, 0);
     lcd.print("WiFi Connected");
-
     delay(1500);
-  }
-
-  else {
-
+  } else {
     Serial.println();
     Serial.println("WiFi Gagal Terhubung!");
 
     lcd.setCursor(0, 0);
     lcd.print("WiFi Failed");
-
     delay(1000);
   }
 
@@ -140,9 +123,7 @@ void koneksiWiFi() {
 // PENGIRIMAN DATA KE THINGSPEAK
 // ========================================
 void kirimThingSpeak(String parameterField) {
-
   if (WiFi.status() != WL_CONNECTED) {
-
     Serial.println("WiFi Terputus!");
     return;
   }
@@ -156,31 +137,21 @@ void kirimThingSpeak(String parameterField) {
     parameterField;
 
   http.begin(serverPath);
-
   http.setTimeout(10000);
 
   int httpResponseCode = http.GET();
 
   if (httpResponseCode == 200) {
-
     String response = http.getString();
 
     if (response.toInt() > 0) {
-
       Serial.println("Pengiriman ThingSpeak Berhasil!");
-
       Serial.print("Entry ID: ");
       Serial.println(response);
-    }
-
-    else {
-
+    } else {
       Serial.println("ThingSpeak Menolak Data!");
     }
-  }
-
-  else {
-
+  } else {
     Serial.print("Pengiriman Gagal! HTTP: ");
     Serial.println(httpResponseCode);
   }
@@ -192,7 +163,6 @@ void kirimThingSpeak(String parameterField) {
 // SETUP
 // ========================================
 void setup() {
-
   Serial.begin(115200);
 
   analogReadResolution(12);
@@ -204,7 +174,6 @@ void setup() {
   lcd.backlight();
   lcd.clear();
 
-  // Pesan awal
   lcd.setCursor(0, 0);
   lcd.print("MONITORING LDR");
 
@@ -213,10 +182,9 @@ void setup() {
 
   delay(2000);
 
-  // Menghubungkan WiFi
   koneksiWiFi();
 
-  // Mulai pengukuran langsung
+  // Pengukuran pertama langsung dilakukan
   waktuSebelumnya = millis() - interval;
 }
 
@@ -224,22 +192,16 @@ void setup() {
 // LOOP UTAMA
 // ========================================
 void loop() {
-
-  // Periksa koneksi WiFi
   koneksiWiFi();
 
-  // Pengiriman setiap 30 detik
   if (millis() - waktuSebelumnya >= interval) {
-
     waktuSebelumnya = millis();
 
-    // ====================================
-    // MEMBACA SENSOR LDR
-    // ====================================
+    // Membaca sensor
     int nilaiCahaya = bacaSensorLDR();
 
-    String statusCuaca = "";
-    String statusLcd = "";
+    String statusLCD = "";
+    String statusKategori = "";
     String parameterField = "";
 
     // ====================================
@@ -248,10 +210,8 @@ void loop() {
 
     if (nilaiCahaya <= batasTerik) {
 
-      statusCuaca =
-        "MATAHARI TERIK (PENCAHAYAAN TINGGI)";
-
-      statusLcd = "TINGGI";
+      statusKategori = "MATAHARI TERIK";
+      statusLCD = "MATAHARI TERIK";
 
       parameterField =
         "&field1=" + String(nilaiCahaya);
@@ -259,10 +219,8 @@ void loop() {
 
     else if (nilaiCahaya <= batasMendung) {
 
-      statusCuaca =
-        "MENDUNG/BERAWAN (PENCAHAYAAN SEDANG)";
-
-      statusLcd = "SEDANG";
+      statusKategori = "MENDUNG/BERAWAN";
+      statusLCD = "MENDUNG/BERAWAN";
 
       parameterField =
         "&field2=" + String(nilaiCahaya);
@@ -270,10 +228,8 @@ void loop() {
 
     else {
 
-      statusCuaca =
-        "GELAP/MALAM (PENCAHAYAAN RENDAH)";
-
-      statusLcd = "RENDAH";
+      statusKategori = "GELAP/MALAM";
+      statusLCD = "GELAP/MALAM";
 
       parameterField =
         "&field3=" + String(nilaiCahaya);
@@ -283,29 +239,26 @@ void loop() {
     // SERIAL MONITOR
     // ====================================
     Serial.println();
-    Serial.println("================================");
-
+    Serial.println("==============================");
     Serial.println("MONITORING INTENSITAS CAHAYA");
 
     Serial.print("Nilai ADC: ");
     Serial.println(nilaiCahaya);
 
     Serial.print("Kategori: ");
-    Serial.println(statusCuaca);
+    Serial.println(statusKategori);
 
     Serial.print("RSSI WiFi: ");
 
     if (WiFi.status() == WL_CONNECTED) {
       Serial.print(WiFi.RSSI());
       Serial.println(" dBm");
-    }
-
-    else {
+    } else {
       Serial.println("Tidak terhubung");
     }
 
     // ====================================
-    // UPDATE LCD I2C
+    // TAMPILAN LCD I2C
     // ====================================
     lcd.clear();
 
@@ -314,14 +267,13 @@ void loop() {
     lcd.print(nilaiCahaya);
 
     lcd.setCursor(0, 1);
-    lcd.print("CAHAYA: ");
-    lcd.print(statusLcd);
+    lcd.print(statusLCD);
 
     // ====================================
     // KIRIM DATA KE THINGSPEAK
     // ====================================
     kirimThingSpeak(parameterField);
 
-    Serial.println("================================");
+    Serial.println("==============================");
   }
 }`
