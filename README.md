@@ -1,4 +1,4 @@
-### Sistem Monitoring Intesitas cahaya pada Tanaman
+### Sistem Monitoring Intesitas cahaya pada Tanaman Hias
 
 ### Anggota Kelompok
 1.  Muhammad Naufal Taqi	(2311101080)	Perakitan perangkat dan pengumpulan dataset monitoring LDR.
