@@ -1,0 +1,712 @@
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <MQTT.h>
+#include <math.h>
+
+// ========================================
+// 1. KONFIGURASI WIFI WOKWI
+// ========================================
+
+const char* WIFI_SSID = "Wokwi-GUEST";
+const char* WIFI_PASS = "";
+
+// ========================================
+// 2. KONFIGURASI HTTP
+// ========================================
+
+const char* HTTP_URL = "https://httpbin.org/post";
+
+// ========================================
+// 3. KONFIGURASI MQTT
+// ========================================
+
+const char* MQTT_HOST = "test.mosquitto.org";
+const int MQTT_PORT = 1883;
+
+const char* MQTT_TOPIC = "wokwi/ldr/exp4827";
+
+// ========================================
+// 4. KONFIGURASI SENSOR LDR
+// ========================================
+
+#define LDR_PIN 34
+
+// ========================================
+// 5. KONFIGURASI PENGUJIAN
+// ========================================
+
+#define TOTAL_MESSAGES 100
+#define INTERVAL_MS 2000
+#define TIMEOUT_MS 5000
+
+#define SMALL_PAYLOAD 20
+#define LARGE_PAYLOAD 500
+
+// ========================================
+// 6. OBJEK KONEKSI
+// ========================================
+
+WiFiClient mqttNetwork;
+WiFiClientSecure httpsNetwork;
+
+MQTTClient mqtt(1024);
+
+// ========================================
+// 7. STATUS PESAN
+// ========================================
+
+enum MessageState {
+  MSG_NOT_SENT,
+  MSG_WAITING,
+  MSG_SUCCESS,
+  MSG_LOST
+};
+
+MessageState stateData[TOTAL_MESSAGES];
+
+unsigned long sendTime[TOTAL_MESSAGES];
+float rttData[TOTAL_MESSAGES];
+
+bool experimentActive = false;
+
+// ========================================
+// 8. MEMBACA SENSOR LDR
+// ========================================
+
+int readLDR() {
+  int nilaiADC = analogRead(LDR_PIN);
+  return nilaiADC;
+}
+
+// ========================================
+// 9. MEMBUAT PAYLOAD
+// ========================================
+
+String createPayload(int seq, int payloadSize) {
+
+  char seqBuffer[7];
+
+  snprintf(seqBuffer, sizeof(seqBuffer), "%06d", seq);
+
+  int nilaiLDR = readLDR();
+
+  String payload = String(seqBuffer) + "," +
+                   String(nilaiLDR);
+
+  while (payload.length() < payloadSize) {
+    payload += "X";
+  }
+
+  return payload.substring(0, payloadSize);
+}
+
+// ========================================
+// 10. CALLBACK MQTT
+// ========================================
+
+void messageReceived(String &topic, String &payload) {
+
+  if (!experimentActive) return;
+
+  if (topic != MQTT_TOPIC) return;
+
+  if (payload.length() < 6) return;
+
+  int seq = payload.substring(0, 6).toInt();
+
+  if (seq < 1 || seq > TOTAL_MESSAGES) return;
+
+  int index = seq - 1;
+
+  if (stateData[index] != MSG_WAITING) return;
+
+  rttData[index] = millis() - sendTime[index];
+
+  stateData[index] = MSG_SUCCESS;
+
+  Serial.printf(
+    "Echo diterima: Seq %d | RTT %.2f ms\n",
+    seq,
+    rttData[index]
+  );
+}
+
+// ========================================
+// 11. KONEKSI WIFI (DIPERBAIKI)
+// ========================================
+
+bool connectWiFi() {
+
+  Serial.println();
+  Serial.println("==================================");
+  Serial.println("MENGHUBUNGKAN WIFI WOKWI");
+  Serial.println("==================================");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+
+  WiFi.disconnect();
+  delay(500);
+
+  // Channel 6 untuk Wokwi-GUEST
+  WiFi.begin(WIFI_SSID, WIFI_PASS, 6);
+
+  int retry = 0;
+  const int maxRetry = 30;
+
+  while (WiFi.status() != WL_CONNECTED &&
+         retry < maxRetry) {
+
+    delay(500);
+    Serial.print(".");
+
+    retry++;
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("WIFI BERHASIL TERHUBUNG!");
+
+    Serial.print("SSID     : ");
+    Serial.println(WiFi.SSID());
+
+    Serial.print("IP ESP32 : ");
+    Serial.println(WiFi.localIP());
+
+    Serial.print("RSSI     : ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+
+    Serial.println("==================================");
+
+    return true;
+
+  } else {
+
+    Serial.println("WIFI GAGAL TERHUBUNG!");
+
+    Serial.print("Status WiFi: ");
+    Serial.println(WiFi.status());
+
+    Serial.println("Periksa simulasi Wokwi.");
+    Serial.println("==================================");
+
+    return false;
+  }
+}
+
+// ========================================
+// 12. KONEKSI MQTT
+// ========================================
+
+bool connectMQTT() {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi belum terhubung!");
+    return false;
+  }
+
+  mqtt.begin(MQTT_HOST, MQTT_PORT, mqttNetwork);
+
+  mqtt.onMessage(messageReceived);
+
+  if (mqtt.connected()) {
+    return true;
+  }
+
+  Serial.println("Menghubungkan MQTT...");
+
+  String clientID =
+    "Wokwi-LDR-" +
+    String((uint32_t)ESP.getEfuseMac(), HEX);
+
+  if (!mqtt.connect(clientID.c_str())) {
+
+    Serial.println("MQTT gagal terhubung!");
+    return false;
+  }
+
+  Serial.println("MQTT terhubung!");
+
+  if (!mqtt.subscribe(MQTT_TOPIC, 1)) {
+
+    Serial.println("Subscribe gagal!");
+
+    mqtt.disconnect();
+
+    return false;
+  }
+
+  // Memproses SUBACK
+  unsigned long start = millis();
+
+  while (millis() - start < 500) {
+    mqtt.loop();
+    delay(1);
+  }
+
+  Serial.println("Subscribe berhasil!");
+
+  return true;
+}
+
+// ========================================
+// 13. RESET DATA
+// ========================================
+
+void resetData() {
+
+  for (int i = 0; i < TOTAL_MESSAGES; i++) {
+
+    stateData[i] = MSG_NOT_SENT;
+
+    sendTime[i] = 0;
+
+    rttData[i] = 0;
+  }
+}
+
+// ========================================
+// 14. MENGHITUNG STATISTIK
+// ========================================
+
+void showStatistics(int scenario) {
+
+  int success = 0;
+  int lost = 0;
+
+  float sorted[TOTAL_MESSAGES];
+
+  int count = 0;
+
+  for (int i = 0; i < TOTAL_MESSAGES; i++) {
+
+    if (stateData[i] == MSG_SUCCESS) {
+
+      success++;
+
+      sorted[count++] = rttData[i];
+
+    } else if (stateData[i] == MSG_LOST) {
+
+      lost++;
+    }
+  }
+
+  float pdr = success * 100.0 / TOTAL_MESSAGES;
+
+  Serial.println("\n==================================");
+  Serial.printf("HASIL S%d\n", scenario);
+  Serial.println("==================================");
+
+  Serial.printf("Total pesan : %d\n", TOTAL_MESSAGES);
+  Serial.printf("Berhasil    : %d\n", success);
+  Serial.printf("Gagal       : %d\n", lost);
+  Serial.printf("PDR         : %.2f %%\n", pdr);
+
+  if (count == 0) {
+
+    Serial.println("Tidak ada RTT berhasil.");
+
+    return;
+  }
+
+  // SORTING DATA RTT
+  for (int i = 0; i < count - 1; i++) {
+
+    for (int j = i + 1; j < count; j++) {
+
+      if (sorted[j] < sorted[i]) {
+
+        float temp = sorted[i];
+
+        sorted[i] = sorted[j];
+
+        sorted[j] = temp;
+      }
+    }
+  }
+
+  // MEAN
+  float total = 0;
+
+  for (int i = 0; i < count; i++) {
+    total += sorted[i];
+  }
+
+  float mean = total / count;
+
+  // MEDIAN
+  float median;
+
+  if (count % 2 == 0) {
+
+    median = (
+      sorted[count / 2 - 1] +
+      sorted[count / 2]
+    ) / 2.0;
+
+  } else {
+
+    median = sorted[count / 2];
+  }
+
+  // STANDARD DEVIATION
+  float variance = 0;
+
+  for (int i = 0; i < count; i++) {
+
+    variance += pow(sorted[i] - mean, 2);
+  }
+
+  float stddev = sqrt(variance / count);
+
+  // P95
+  int p95Index = (int)ceil(0.95 * count) - 1;
+
+  if (p95Index < 0) p95Index = 0;
+
+  if (p95Index >= count) p95Index = count - 1;
+
+  // HASIL STATISTIK
+  Serial.println("----------------------------------");
+
+  Serial.printf("Mean RTT    : %.3f ms\n", mean);
+  Serial.printf("Median RTT  : %.3f ms\n", median);
+  Serial.printf("Std Dev     : %.3f ms\n", stddev);
+  Serial.printf("P95 RTT     : %.3f ms\n", sorted[p95Index]);
+
+  Serial.println("==================================");
+}
+
+// ========================================
+// 15. PENGUJIAN HTTP
+// ========================================
+
+void runHTTP(int scenario, int payloadSize) {
+
+  resetData();
+
+  Serial.println("\n==================================");
+  Serial.printf("MULAI S%d - HTTP POST\n", scenario);
+  Serial.printf("Payload: %d byte\n", payloadSize);
+  Serial.println("==================================");
+
+  Serial.println(
+    "scenario,seq,payload,success,rtt_ms,rssi,qos"
+  );
+
+  for (int seq = 1; seq <= TOTAL_MESSAGES; seq++) {
+
+    unsigned long cycleStart = millis();
+
+    String payload = createPayload(seq, payloadSize);
+
+    HTTPClient http;
+
+    http.setTimeout(TIMEOUT_MS);
+
+    unsigned long start = micros();
+
+    http.begin(httpsNetwork, HTTP_URL);
+
+    http.addHeader("Content-Type", "text/plain");
+
+    int code = http.POST(payload);
+
+    float rtt = (micros() - start) / 1000.0;
+
+    bool success = (code >= 200 && code < 300);
+
+    stateData[seq - 1] =
+      success ? MSG_SUCCESS : MSG_LOST;
+
+    rttData[seq - 1] = rtt;
+
+    Serial.printf(
+      "%d,%d,%d,%d,%.3f,%d,0\n",
+      scenario,
+      seq,
+      payload.length(),
+      success ? 1 : 0,
+      rtt,
+      WiFi.RSSI()
+    );
+
+    http.end();
+
+    // Interval antarawal pengiriman 2 detik
+    while (millis() - cycleStart < INTERVAL_MS) {
+      delay(1);
+    }
+  }
+
+  showStatistics(scenario);
+}
+
+// ========================================
+// 16. MEMERIKSA TIMEOUT MQTT
+// ========================================
+
+void checkTimeouts() {
+
+  unsigned long now = millis();
+
+  for (int i = 0; i < TOTAL_MESSAGES; i++) {
+
+    if (stateData[i] == MSG_WAITING) {
+
+      if (now - sendTime[i] >= TIMEOUT_MS) {
+
+        stateData[i] = MSG_LOST;
+      }
+    }
+  }
+}
+
+// ========================================
+// 17. PENGUJIAN MQTT
+// ========================================
+
+void runMQTT(int scenario, int payloadSize, int qos) {
+
+  resetData();
+
+  Serial.println("\n==================================");
+
+  Serial.printf(
+    "MULAI S%d - MQTT QoS %d\n",
+    scenario,
+    qos
+  );
+
+  Serial.printf("Payload: %d byte\n", payloadSize);
+
+  Serial.println("==================================");
+
+  if (!connectMQTT()) {
+
+    Serial.println("Pengujian dibatalkan.");
+
+    return;
+  }
+
+  Serial.println(
+    "scenario,seq,payload,success,rtt_ms,rssi,qos"
+  );
+
+  experimentActive = true;
+
+  unsigned long nextSend = millis();
+
+  // PENGIRIMAN 100 PESAN
+  for (int seq = 1; seq <= TOTAL_MESSAGES; seq++) {
+
+    while ((long)(millis() - nextSend) < 0) {
+
+      mqtt.loop();
+
+      checkTimeouts();
+
+      delay(1);
+    }
+
+    checkTimeouts();
+
+    int index = seq - 1;
+
+    String payload = createPayload(seq, payloadSize);
+
+    if (!mqtt.connected()) {
+
+      if (!connectMQTT()) {
+
+        stateData[index] = MSG_LOST;
+
+        nextSend += INTERVAL_MS;
+
+        continue;
+      }
+    }
+
+    sendTime[index] = millis();
+
+    stateData[index] = MSG_WAITING;
+
+    bool published = mqtt.publish(
+      MQTT_TOPIC,
+      payload,
+      false,
+      qos
+    );
+
+    Serial.printf(
+      "Seq %d Publish: %s\n",
+      seq,
+      published ? "BERHASIL" : "GAGAL"
+    );
+
+    if (!published) {
+
+      stateData[index] = MSG_LOST;
+    }
+
+    nextSend += INTERVAL_MS;
+
+    mqtt.loop();
+  }
+
+  // MENUNGGU PESAN TERAKHIR
+  while (true) {
+
+    mqtt.loop();
+
+    checkTimeouts();
+
+    bool pendingFound = false;
+
+    for (int i = 0; i < TOTAL_MESSAGES; i++) {
+
+      if (stateData[i] == MSG_WAITING) {
+
+        pendingFound = true;
+
+        break;
+      }
+    }
+
+    if (!pendingFound) {
+      break;
+    }
+
+    delay(1);
+  }
+
+  experimentActive = false;
+
+  // CETAK DATA CSV
+  Serial.println("\n===== DATA MQTT =====");
+
+  for (int i = 0; i < TOTAL_MESSAGES; i++) {
+
+    Serial.printf(
+      "%d,%d,%d,%d,%.3f,%d,%d\n",
+      scenario,
+      i + 1,
+      payloadSize,
+      stateData[i] == MSG_SUCCESS ? 1 : 0,
+      rttData[i],
+      WiFi.RSSI(),
+      qos
+    );
+  }
+
+  showStatistics(scenario);
+
+  mqtt.disconnect();
+}
+
+// ========================================
+// 18. SETUP
+// ========================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  delay(1000);
+
+  analogReadResolution(12);
+
+  analogSetPinAttenuation(LDR_PIN, ADC_11db);
+
+  httpsNetwork.setInsecure();
+
+  // Koneksi WiFi
+  connectWiFi();
+
+  Serial.println("\n==================================");
+  Serial.println("MONITORING INTENSITAS CAHAYA LDR");
+  Serial.println("==================================");
+
+  Serial.println("S1 = HTTP POST 20 BYTE");
+  Serial.println("S2 = HTTP POST 500 BYTE");
+  Serial.println("S3 = MQTT QoS 0 20 BYTE");
+  Serial.println("S4 = MQTT QoS 0 500 BYTE");
+  Serial.println("S5 = MQTT QoS 1 20 BYTE");
+  Serial.println("S6 = MQTT QoS 1 500 BYTE");
+
+  Serial.println("----------------------------------");
+
+  Serial.println("Interval pengiriman: 2 detik");
+  Serial.println("Jumlah pesan: 100");
+  Serial.println("Timeout: 5 detik");
+
+  Serial.println("----------------------------------");
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Koneksi siap digunakan.");
+  } else {
+    Serial.println("Menunggu koneksi WiFi.");
+  }
+
+  Serial.println("Ketik angka 1-6 untuk memulai.");
+}
+
+// ========================================
+// 19. LOOP
+// ========================================
+
+void loop() {
+
+  // MEMERIKSA KONEKSI WIFI
+  if (WiFi.status() != WL_CONNECTED) {
+
+    Serial.println("WiFi terputus!");
+
+    connectWiFi();
+
+    if (WiFi.status() != WL_CONNECTED) {
+
+      delay(3000);
+
+      return;
+    }
+  }
+
+  // MEMBACA INPUT SERIAL
+  if (Serial.available() > 0) {
+
+    char input = Serial.read();
+
+    if (input >= '1' && input <= '6') {
+
+      int scenario = input - '0';
+
+      int payloadSize =
+        (scenario == 1 ||
+         scenario == 3 ||
+         scenario == 5)
+        ? SMALL_PAYLOAD
+        : LARGE_PAYLOAD;
+
+      if (scenario == 1 || scenario == 2) {
+
+        runHTTP(scenario, payloadSize);
+
+      } else {
+
+        int qos =
+          (scenario == 3 || scenario == 4) ? 0 : 1;
+
+        runMQTT(scenario, payloadSize, qos);
+      }
+
+      Serial.println("\nPilih skenario berikutnya (1-6):");
+    }
+  }
+}
